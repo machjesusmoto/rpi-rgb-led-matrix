@@ -283,5 +283,33 @@ struct HardwareMapping matrix_hardware_mappings[] = {
   },
 #endif
 
+  /*
+   * ORANGE_PI_ZERO2W: Orange Pi Zero 2W (Allwinner H618) mapping.
+   * Uses virtual GPIO indices 0-13 for Hub75 signals.
+   * The H618 GPIO layer translates these to actual port/pin pairs.
+   * Reference: data-model.md pin table.
+   */
+  {
+    .name          = "orangepi-zero2w",
+
+    /* Virtual indices — translated to H618 port/pin by GPIO layer */
+    .output_enable = GPIO_BIT(0),   /* Virtual 0: PI11 (GPIO 267) - Physical 32 */
+    .clock         = GPIO_BIT(1),   /* Virtual 1: PH6  (GPIO 230) - Physical 23 */
+    .strobe        = GPIO_BIT(2),   /* Virtual 2: PH7  (GPIO 231) - Physical 19 */
+
+    .a             = GPIO_BIT(3),   /* Virtual 3: PH2  (GPIO 226) - Physical 11 */
+    .b             = GPIO_BIT(4),   /* Virtual 4: PH3  (GPIO 227) - Physical 13 */
+    .c             = GPIO_BIT(5),   /* Virtual 5: PH4  (GPIO 228) - Physical 18 */
+    .d             = GPIO_BIT(6),   /* Virtual 6: PI5  (GPIO 261) - Physical 15 */
+    .e             = GPIO_BIT(7),   /* Virtual 7: PI6  (GPIO 262) - Physical 22 */
+
+    .p0_r1         = GPIO_BIT(8),   /* Virtual 8:  PI0  (GPIO 256) - Physical 29 */
+    .p0_g1         = GPIO_BIT(9),   /* Virtual 9:  PI1  (GPIO 257) - Physical 12 */
+    .p0_b1         = GPIO_BIT(10),  /* Virtual 10: PI2  (GPIO 258) - Physical 35 */
+    .p0_r2         = GPIO_BIT(11),  /* Virtual 11: PI3  (GPIO 259) - Physical 40 */
+    .p0_g2         = GPIO_BIT(12),  /* Virtual 12: PI4  (GPIO 260) - Physical 38 */
+    .p0_b2         = GPIO_BIT(13),  /* Virtual 13: PI15 (GPIO 271) - Physical 31 */
+  },
+
   {0}
 };

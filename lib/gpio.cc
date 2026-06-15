@@ -19,9 +19,11 @@
 #include "gpio.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "gpio-bits-h618.h"
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -116,6 +118,24 @@
 #define GPIO_SET *(gpio+7)  // sets   bits which are 1 ignores bits which are 0
 #define GPIO_CLR *(gpio+10) // clears bits which are 1 ignores bits which are 0
 
+// ORANGE_PI_ZERO2W: Virtual-to-physical pin translation for H618
+static const H618Pin kH618PinTable[H618_NUM_VIRTUAL_PINS] = {
+  {H618_PORT_I, 11},  //  0: OE  = PI11 (GPIO 267)
+  {H618_PORT_H,  6},  //  1: CLK = PH6  (GPIO 230)
+  {H618_PORT_H,  7},  //  2: LAT = PH7  (GPIO 231)
+  {H618_PORT_H,  2},  //  3: A   = PH2  (GPIO 226)
+  {H618_PORT_H,  3},  //  4: B   = PH3  (GPIO 227)
+  {H618_PORT_H,  4},  //  5: C   = PH4  (GPIO 228)
+  {H618_PORT_I,  5},  //  6: D   = PI5  (GPIO 261)
+  {H618_PORT_I,  6},  //  7: E   = PI6  (GPIO 262)
+  {H618_PORT_I,  0},  //  8: R1  = PI0  (GPIO 256)
+  {H618_PORT_I,  1},  //  9: G1  = PI1  (GPIO 257)
+  {H618_PORT_I,  2},  // 10: B1  = PI2  (GPIO 258)
+  {H618_PORT_I,  3},  // 11: R2  = PI3  (GPIO 259)
+  {H618_PORT_I,  4},  // 12: G2  = PI4  (GPIO 260)
+  {H618_PORT_I, 15},  // 13: B2  = PI15 (GPIO 271)
+};
+
 // We're pre-mapping all the registers on first call of GPIO::Init(),
 // so that it is possible to drop privileges afterwards and still have these
 // usable.
@@ -144,7 +164,7 @@ static bool LinuxHasModuleLoaded(const char *name) {
 #define GPIO_BIT(x) (1ull << x)
 
 GPIO::GPIO() : output_bits_(0), input_bits_(0), reserved_bits_(0),
-               slowdown_(1)
+               slowdown_(1), is_h618_(false), s_GPIO_registers_(NULL)
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
              , uses_64_bit_(false)
 #endif
@@ -156,6 +176,25 @@ gpio_bits_t GPIO::InitOutputs(gpio_bits_t outputs,
   if (s_GPIO_registers == NULL) {
     fprintf(stderr, "Attempt to init outputs but not yet Init()-ialized.\n");
     return 0;
+  }
+
+  // ORANGE_PI_ZERO2W: H618 direction configuration
+  if (is_h618_) {
+    for (int b = 0; b < H618_NUM_VIRTUAL_PINS; ++b) {
+      if (outputs & GPIO_BIT(b)) {
+        int port = kH618PinTable[b].port;
+        int pin = kH618PinTable[b].pin;
+        volatile uint32_t *cfg = s_GPIO_registers_ +
+          (H618_PORT_OFFSET(port) + (pin / 8) * 4) / sizeof(uint32_t);
+        int shift = (pin % 8) * 4;
+        uint32_t val = *cfg;
+        val &= ~(0x7u << shift);
+        val |= (H618_GPIO_MODE_OUTPUT << shift);
+        *cfg = val;
+      }
+    }
+    output_bits_ |= outputs;
+    return outputs;
   }
 
   // Hack: for the PWM mod, the user soldered together GPIO 18 (new OE)
@@ -350,10 +389,53 @@ static RaspberryPiModel GetPiModel() {
   return pi_model;
 }
 
+// ORANGE_PI_ZERO2W: Platform detection for Allwinner H618
+enum Platform {
+  PLATFORM_RASPBERRY_PI,
+  PLATFORM_ORANGEPI_H618
+};
+
+static bool IsOrangePiZero2W() {
+  FILE *f = fopen("/proc/device-tree/compatible", "rb");
+  if (!f) return false;
+  char buf[256];
+  size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[len] = '\0';
+  return (memmem(buf, len, "sun50i-h618", 11) != NULL ||
+          memmem(buf, len, "orangepi-zero2w", 15) != NULL);
+}
+
+static Platform GetPlatform() {
+  static Platform platform = IsOrangePiZero2W()
+    ? PLATFORM_ORANGEPI_H618 : PLATFORM_RASPBERRY_PI;
+  return platform;
+}
+
 static int GetNumCores() {
   return GetPiModel() == PI_MODEL_1 ? 1 : 4;
 }
 
+
+// ORANGE_PI_ZERO2W: Generic physical memory mmap
+static uint32_t *mmap_physical(off_t phys_addr, size_t length) {
+  int mem_fd;
+  if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC)) < 0) {
+    fprintf(stderr, "Failed to open /dev/mem: %s\n", strerror(errno));
+    return NULL;
+  }
+  uint32_t *result =
+    (uint32_t*) mmap(NULL, length, PROT_READ|PROT_WRITE, MAP_SHARED,
+                     mem_fd, phys_addr);
+  close(mem_fd);
+  if (result == MAP_FAILED) {
+    perror("mmap error: ");
+    fprintf(stderr, "MMapping physical 0x%lx, length %zu\n",
+            (unsigned long)phys_addr, length);
+    return NULL;
+  }
+  return result;
+}
 static uint32_t *mmap_bcm_register(off_t register_offset) {
   off_t base = BCM2709_PERI_BASE;  // safe fallback guess.
   switch (GetPiModel()) {
@@ -406,6 +488,17 @@ static uint32_t *mmap_bcm_register(off_t register_offset) {
 static bool mmap_all_bcm_registers_once() {
   if (s_GPIO_registers != NULL) return true;  // already done.
 
+  // ORANGE_PI_ZERO2W: H618 platform uses different register layout
+  if (GetPlatform() == PLATFORM_ORANGEPI_H618) {
+    s_GPIO_registers = mmap_physical(ORANGEPI_H618_PIO_BASE, 0x2000);
+    if (s_GPIO_registers == NULL) {
+      fprintf(stderr, "Failed to map H618 PIO registers at 0x%08x\n",
+              ORANGEPI_H618_PIO_BASE);
+      return false;
+    }
+    return true;
+  }
+
   // The common GPIO registers.
   s_GPIO_registers = mmap_bcm_register(GPIO_REGISTER_OFFSET);
   if (s_GPIO_registers == NULL) {
@@ -434,6 +527,13 @@ bool GPIO::Init(int slowdown) {
   if (!mmap_all_bcm_registers_once())
     return false;
 
+
+  // ORANGE_PI_ZERO2W: H618 uses different register layout
+  if (GetPlatform() == PLATFORM_ORANGEPI_H618) {
+    is_h618_ = true;
+    s_GPIO_registers_ = s_GPIO_registers;
+    return true;
+  }
   gpio_set_bits_low_ = s_GPIO_registers + (0x1C / sizeof(uint32_t));
   gpio_clr_bits_low_ = s_GPIO_registers + (0x28 / sizeof(uint32_t));
   gpio_read_bits_low_ = s_GPIO_registers + (0x34 / sizeof(uint32_t));
@@ -448,11 +548,53 @@ bool GPIO::Init(int slowdown) {
 }
 
 bool GPIO::IsPi4() {
-  return GetPiModel() == PI_MODEL_4;
+  return GetPlatform() == PLATFORM_RASPBERRY_PI && GetPiModel() == PI_MODEL_4;
 }
 
 bool GPIO::IsPi5Family() {
-  return GetPiModel() == PI_MODEL_5;
+  return GetPlatform() == PLATFORM_RASPBERRY_PI && GetPiModel() == PI_MODEL_5;
+}
+
+// ORANGE_PI_ZERO2W: H618-specific GPIO set/clear/read using virtual pin translation
+void GPIO::H618SetBits(gpio_bits_t value) {
+  if (s_GPIO_registers_ == NULL) return;
+  for (int b = 0; b < H618_NUM_VIRTUAL_PINS; ++b) {
+    if (value & GPIO_BIT(b)) {
+      int port = kH618PinTable[b].port;
+      int pin = kH618PinTable[b].pin;
+      volatile uint32_t *dat = s_GPIO_registers_ +
+        (H618_PORT_OFFSET(port) + H618_DAT_OFFSET) / sizeof(uint32_t);
+      *dat |= (1u << pin);
+    }
+  }
+}
+
+void GPIO::H618ClearBits(gpio_bits_t value) {
+  if (s_GPIO_registers_ == NULL) return;
+  for (int b = 0; b < H618_NUM_VIRTUAL_PINS; ++b) {
+    if (value & GPIO_BIT(b)) {
+      int port = kH618PinTable[b].port;
+      int pin = kH618PinTable[b].pin;
+      volatile uint32_t *dat = s_GPIO_registers_ +
+        (H618_PORT_OFFSET(port) + H618_DAT_OFFSET) / sizeof(uint32_t);
+      *dat &= ~(1u << pin);
+    }
+  }
+}
+
+gpio_bits_t GPIO::H618ReadBits() const {
+  if (s_GPIO_registers_ == 0) return 0;
+  gpio_bits_t result = 0;
+  for (int b = 0; b < H618_NUM_VIRTUAL_PINS; ++b) {
+    int port = kH618PinTable[b].port;
+    int pin = kH618PinTable[b].pin;
+    volatile uint32_t *dat = s_GPIO_registers_ +
+      (H618_PORT_OFFSET(port) + H618_DAT_OFFSET) / sizeof(uint32_t);
+    if (*dat & (1u << pin)) {
+      result |= GPIO_BIT(b);
+    }
+  }
+  return result;
 }
 
 /*
@@ -507,6 +649,8 @@ static void busy_wait_nanos_rpi_1(long nanos);
 static void busy_wait_nanos_rpi_2(long nanos);
 static void busy_wait_nanos_rpi_3(long nanos);
 static void busy_wait_nanos_rpi_4(long nanos);
+// ORANGE_PI_ZERO2W: H618 busy-wait (1.8GHz Cortex-A53)
+static void busy_wait_nanos_h618(long nanos);
 static void (*busy_wait_impl)(long) = busy_wait_nanos_rpi_3;
 
 // Best effort write to file. Used to set kernel parameters.
@@ -534,6 +678,13 @@ bool Timers::Init() {
   if (!mmap_all_bcm_registers_once())
     return false;
 
+  // ORANGE_PI_ZERO2W: H618 uses busy-wait only, skip BCM timer setup
+  if (GetPlatform() == PLATFORM_ORANGEPI_H618) {
+    busy_wait_impl = busy_wait_nanos_h618;
+    return true;
+  }
+
+  // Raspberry Pi: existing busy-wait selection
   // Choose the busy-wait loop that fits our Pi.
   switch (GetPiModel()) {
   case PI_MODEL_1: busy_wait_impl = busy_wait_nanos_rpi_1; break;
@@ -638,6 +789,15 @@ static void busy_wait_nanos_rpi_4(long nanos) {
   if (nanos < 20) return;
   // Interesting, the Pi4 is _slower_ than the Pi3 ? At least for this busy loop
   for (uint32_t i = (nanos - 5) * 100 / 132; i != 0; --i) {
+    asm("");
+  }
+}
+
+// ORANGE_PI_ZERO2W: H618 busy-wait loop
+// Allwinner H618 at 1.8GHz Cortex-A53: ~55 cycles per iteration
+static void busy_wait_nanos_h618(long nanos) {
+  if (nanos < 15) return;
+  for (uint32_t i = (nanos - 10) * 100 / 55; i != 0; --i) {
     asm("");
   }
 }

@@ -19,10 +19,15 @@
 #define RPI_GPIOBITS_H
 
 #include <stdint.h>
+
+// ORANGE_PI_ZERO2W: Always use 64-bit to support H618 GPIO numbers (0-287).
+// The original code used uint32_t for BCM (GPIO 0-31) and uint64_t for
+// compute-module. H618 uses GPIO numbers 226-271, requiring at least
+// 272 bits... but we use a virtual mapping (indices 0-13) so 64-bit suffices.
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
 typedef uint64_t gpio_bits_t;
 #else
-typedef uint32_t gpio_bits_t;
+typedef uint64_t gpio_bits_t;
 #endif
 
 #endif

@@ -322,6 +322,8 @@ void PrintMatrixFlags(FILE *out, const RGBMatrix::Options &d,
 
   fprintf(out,
           "\t--led-gpio-mapping=<name> : Name of GPIO mapping used. Default \"%s\"\n"
+          "\t                            Available: regular, adafruit-hat, adafruit-hat-pwm,\n"
+          "\t                            regular-pi1, classic, classic-pi1, orangepi-zero2w\n"
           "\t--led-rows=<rows>         : Panel rows. Typically 8, 16, 32 or 64."
           " (Default: %d).\n"
           "\t--led-cols=<cols>         : Panel columns. Typically 32 or 64. "

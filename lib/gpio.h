@@ -17,6 +17,7 @@
 #define RPI_GPIO_INTERNAL_H
 
 #include "gpio-bits.h"
+#include "gpio-bits-h618.h"
 
 #include <vector>
 
@@ -26,63 +27,57 @@
 #define LED_MATRIX_ALLOW_BARRIER_DELAY 0
 #endif
 
-// Putting this in our namespace to not collide with other things called like
-// this.
 namespace rgb_matrix {
-// For now, everything is initialized as output.
 class GPIO {
 public:
   GPIO();
 
-  // Initialize before use. Returns 'true' if successful, 'false' otherwise
-  // (e.g. due to a permission problem).
   bool Init(int slowdown);
 
-  // Initialize outputs.
-  // Returns the bits that were available and could be set for output.
-  // (never use the optional adafruit_hack_needed parameter, it is used
-  // internally to this library).
   gpio_bits_t InitOutputs(gpio_bits_t outputs,
                           bool adafruit_hack_needed = false);
 
-  // Request given bitmap of GPIO inputs.
-  // Returns the bits that were available and could be reserved.
   gpio_bits_t RequestInputs(gpio_bits_t inputs);
 
-  // Reset internal bookkeeping about which GPIOs have been claimed.
-  // This does not touch the hardware registers directly; it clears the
-  // tracked masks so subsequent InitOutputs/RequestInputs will reconfigure
-  // GPIO pins as needed.
   void ResetState();
 
-  // Set the bits that are '1' in the output. Leave the rest untouched.
   inline void SetBits(gpio_bits_t value) {
     if (!value) return;
-    WriteSetBits(value);
+    if (is_h618_) {
+      H618SetBits(value);
+    } else {
+      WriteSetBits(value);
+    }
     delay();
   }
 
-  // Clear the bits that are '1' in the output. Leave the rest untouched.
   inline void ClearBits(gpio_bits_t value) {
     if (!value) return;
-    WriteClrBits(value);
+    if (is_h618_) {
+      H618ClearBits(value);
+    } else {
+      WriteClrBits(value);
+    }
     delay();
   }
 
-  // Write all the bits of "value" mentioned in "mask". Leave the rest untouched.
   inline void WriteMaskedBits(gpio_bits_t value, gpio_bits_t mask) {
-    // Writing a word is two operations. The IO is actually pretty slow, so
-    // this should probably  be unnoticable.
-    WriteClrBits(~value & mask);
-    WriteSetBits(value & mask);
+    if (is_h618_) {
+      H618ClearBits(~value & mask);
+      H618SetBits(value & mask);
+    } else {
+      WriteClrBits(~value & mask);
+      WriteSetBits(value & mask);
+    }
     delay();
   }
 
-  inline gpio_bits_t Read() const { return ReadRegisters() & input_bits_; }
+  inline gpio_bits_t Read() const {
+    if (is_h618_) return H618ReadBits() & input_bits_;
+    return ReadRegisters() & input_bits_;
+  }
 
-  // Return if this appears to be a Pi 4-class board.
   static bool IsPi4();
-  // Return if this appears to be a Pi 5-family board with RP1 I/O.
   static bool IsPi5Family();
 
 private:
@@ -93,8 +88,19 @@ private:
         return;
     }
 #endif
-    for (int n = 0; n < slowdown_; n++) {
-      *gpio_clr_bits_low_ = 0;
+    if (is_h618_) {
+      if (s_GPIO_registers_) {
+        volatile uint32_t *pi_data =
+          s_GPIO_registers_ + (0x1800 + 0x10) / 4;
+        (void)*pi_data;
+      }
+      for (int n = 0; n < slowdown_; n++) {
+        asm volatile("" ::: "memory");
+      }
+    } else {
+      for (int n = 0; n < slowdown_; n++) {
+        *gpio_clr_bits_low_ = 0;
+      }
     }
   }
 
@@ -122,11 +128,17 @@ private:
 #endif
   }
 
+  // ORANGE_PI_ZERO2W: H618-specific methods (defined in gpio.cc)
+  void H618SetBits(gpio_bits_t value);
+  void H618ClearBits(gpio_bits_t value);
+  gpio_bits_t H618ReadBits() const;
+
 private:
   gpio_bits_t output_bits_;
   gpio_bits_t input_bits_;
   gpio_bits_t reserved_bits_;
   int slowdown_;
+  bool is_h618_;
 
   volatile uint32_t *gpio_set_bits_low_;
   volatile uint32_t *gpio_clr_bits_low_;
@@ -138,35 +150,23 @@ private:
   volatile uint32_t *gpio_clr_bits_high_;
   volatile uint32_t *gpio_read_bits_high_;
 #endif
+
+  // ORANGE_PI_ZERO2W: H618 memory-mapped register base
+  volatile uint32_t *s_GPIO_registers_;
 };
 
-// A PinPulser is a utility class that pulses a GPIO pin. There can be various
-// implementations.
 class PinPulser {
 public:
-  // Factory for a PinPulser. Chooses the right implementation depending
-  // on the context (CPU and which pins are affected).
-  // "gpio_mask" is the mask that should be output (since we only
-  //   need negative pulses, this is what it does)
-  // "nano_wait_spec" contains a list of time periods we'd like
-  //   invoke later. This can be used to pre-process timings if needed.
   static PinPulser *Create(GPIO *io, gpio_bits_t gpio_mask,
                            bool allow_hardware_pulsing,
                            const std::vector<int> &nano_wait_spec);
 
   virtual ~PinPulser() {}
-
-  // Send a pulse with a given length (index into nano_wait_spec array).
   virtual void SendPulse(int time_spec_number) = 0;
-
-  // If SendPulse() is asynchronously implemented, wait for pulse to finish.
   virtual void WaitPulseFinished() {}
 };
 
-// Get rolling over microsecond counter. We get this from a hardware register
-// if possible and a terrible slow fallback otherwise.
 uint32_t GetMicrosecondCounter();
-
 void SleepMicroseconds(long);
 
 }  // end namespace rgb_matrix
