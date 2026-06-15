@@ -72,21 +72,26 @@
 // Maps virtual GPIO index (used in HardwareMapping) to (port, pin) on H618.
 // Virtual indices match the orangepi-zero2w HardwareMapping struct.
 //
-// Virtual index mapping:
-//  0: OE  = PI11 (port=8, pin=11) - Physical 32
-//  1: CLK = PH6  (port=7, pin=6)  - Physical 23
-//  2: LAT = PH7  (port=7, pin=7)  - Physical 19
-//  3: A   = PH2  (port=7, pin=2)  - Physical 11
-//  4: B   = PH3  (port=7, pin=3)  - Physical 13
-//  5: C   = PH4  (port=7, pin=4)  - Physical 18
-//  6: D   = PI5  (port=8, pin=5)  - Physical 15
-//  7: E   = PI6  (port=8, pin=6)  - Physical 22
-//  8: R1  = PI0  (port=8, pin=0)  - Physical 29
-//  9: G1  = PI1  (port=8, pin=1)  - Physical 12
-// 10: B1  = PI2  (port=8, pin=2)  - Physical 35
-// 11: R2  = PI3  (port=8, pin=3)  - Physical 40
-// 12: G2  = PI4  (port=8, pin=4)  - Physical 38
-// 13: B2  = PI15 (port=8, pin=15) - Physical 31
+// Pin mapping follows the Adafruit RGB Matrix Bonnet physical layout.
+// The bonnet routes RPi BCM GPIOs to Hub75 signals via specific physical
+// header pins. When plugged into the Orange Pi Zero 2W, those same physical
+// pins map to different H618 GPIO numbers.
+//
+// Virtual index mapping (Bonnet → Orange Pi Zero 2W):
+//  0: OE  = PI13 (port=8, pin=13) - Physical 7   (RPi GPIO 4)
+//  1: CLK = PH2  (port=7, pin=2)  - Physical 11  (RPi GPIO 17)
+//  2: LAT = PI3  (port=8, pin=3)  - Physical 40  (RPi GPIO 21)
+//  3: A   = PI5  (port=8, pin=5)  - Physical 15  (RPi GPIO 22)
+//  4: B   = PI16 (port=8, pin=16) - Physical 37  (RPi GPIO 26)
+//  5: C   = PH3  (port=7, pin=3)  - Physical 13  (RPi GPIO 27)
+//  6: D   = PI4  (port=8, pin=4)  - Physical 38  (RPi GPIO 20)
+//  7: E   = PH4  (port=7, pin=4)  - Physical 18  (RPi GPIO 24)
+//  8: R1  = PI0  (port=8, pin=0)  - Physical 29  (RPi GPIO 5)
+//  9: G1  = PI12 (port=8, pin=12) - Physical 33  (RPi GPIO 13)
+// 10: B1  = PI15 (port=8, pin=15) - Physical 31  (RPi GPIO 6)
+// 11: R2  = PI11 (port=8, pin=11) - Physical 32  (RPi GPIO 12)
+// 12: G2  = PC12 (port=2, pin=12) - Physical 36  (RPi GPIO 16)
+// 13: B2  = PI14 (port=8, pin=14) - Physical 16  (RPi GPIO 23)
 
 #ifdef __cplusplus
 extern "C" {

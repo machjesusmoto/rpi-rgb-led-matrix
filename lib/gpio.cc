@@ -119,21 +119,23 @@
 #define GPIO_CLR *(gpio+10) // clears bits which are 1 ignores bits which are 0
 
 // ORANGE_PI_ZERO2W: Virtual-to-physical pin translation for H618
+// Adafruit RGB Matrix Bonnet layout — bonnet routes RPi BCM GPIOs to Hub75
+// via specific physical header pins; those same physical pins map to H618 GPIOs.
 static const H618Pin kH618PinTable[H618_NUM_VIRTUAL_PINS] = {
-  {H618_PORT_I, 11},  //  0: OE  = PI11 (GPIO 267)
-  {H618_PORT_H,  6},  //  1: CLK = PH6  (GPIO 230)
-  {H618_PORT_H,  7},  //  2: LAT = PH7  (GPIO 231)
-  {H618_PORT_H,  2},  //  3: A   = PH2  (GPIO 226)
-  {H618_PORT_H,  3},  //  4: B   = PH3  (GPIO 227)
-  {H618_PORT_H,  4},  //  5: C   = PH4  (GPIO 228)
-  {H618_PORT_I,  5},  //  6: D   = PI5  (GPIO 261)
-  {H618_PORT_I,  6},  //  7: E   = PI6  (GPIO 262)
-  {H618_PORT_I,  0},  //  8: R1  = PI0  (GPIO 256)
-  {H618_PORT_I,  1},  //  9: G1  = PI1  (GPIO 257)
-  {H618_PORT_I,  2},  // 10: B1  = PI2  (GPIO 258)
-  {H618_PORT_I,  3},  // 11: R2  = PI3  (GPIO 259)
-  {H618_PORT_I,  4},  // 12: G2  = PI4  (GPIO 260)
-  {H618_PORT_I, 15},  // 13: B2  = PI15 (GPIO 271)
+  {H618_PORT_I, 13},  //  0: OE  = PI13 (GPIO 269)  [RPi pin 7,  GPIO 4]
+  {H618_PORT_H,  2},  //  1: CLK = PH2  (GPIO 226)  [RPi pin 11, GPIO 17]
+  {H618_PORT_I,  3},  //  2: LAT = PI3  (GPIO 259)  [RPi pin 40, GPIO 21]
+  {H618_PORT_I,  5},  //  3: A   = PI5  (GPIO 261)  [RPi pin 15, GPIO 22]
+  {H618_PORT_I, 16},  //  4: B   = PI16 (GPIO 272)  [RPi pin 37, GPIO 26]
+  {H618_PORT_H,  3},  //  5: C   = PH3  (GPIO 227)  [RPi pin 13, GPIO 27]
+  {H618_PORT_I,  4},  //  6: D   = PI4  (GPIO 260)  [RPi pin 38, GPIO 20]
+  {H618_PORT_H,  4},  //  7: E   = PH4  (GPIO 228)  [RPi pin 18, GPIO 24]
+  {H618_PORT_I,  0},  //  8: R1  = PI0  (GPIO 256)  [RPi pin 29, GPIO 5]
+  {H618_PORT_I, 12},  //  9: G1  = PI12 (GPIO 268)  [RPi pin 33, GPIO 13]
+  {H618_PORT_I, 15},  // 10: B1  = PI15 (GPIO 271)  [RPi pin 31, GPIO 6]
+  {H618_PORT_I, 11},  // 11: R2  = PI11 (GPIO 267)  [RPi pin 32, GPIO 12]
+  {H618_PORT_C, 12},  // 12: G2  = PC12 (GPIO  76)  [RPi pin 36, GPIO 16]
+  {H618_PORT_I, 14},  // 13: B2  = PI14 (GPIO 270)  [RPi pin 16, GPIO 23]
 };
 
 // We're pre-mapping all the registers on first call of GPIO::Init(),
