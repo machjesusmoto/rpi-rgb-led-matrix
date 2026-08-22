@@ -283,5 +283,54 @@ struct HardwareMapping matrix_hardware_mappings[] = {
   },
 #endif
 
+  /*
+   * ORANGE_PI_ZERO2W: GPIO mapping for Orange Pi Zero 2W (Allwinner H618)
+   *
+   * Pin mapping based on research.md R4:
+   * - Data signals on Port I (PI0-PI4, PI15) for efficient bulk writes
+   * - Address signals mixed PH and PI
+   * - OE on PI11 (PWM1 capable)
+   * - CLK on PH6, LAT on PH7
+   *
+   * IMPORTANT: H618 GPIO numbers are 224+ which exceeds gpio_bits_t capacity.
+   * This mapping uses VIRTUAL bit positions (0-31) that are translated to
+   * actual H618 GPIO pins in the Orange Pi-specific GPIO driver code.
+   *
+   * Virtual bit assignments (translated in gpio.cc for H618):
+   *   Bits 0-5:   Data signals (R1,G1,B1,R2,G2,B2) -> PI0-4,PI15
+   *   Bits 6-10:  Address lines (A,B,C,D,E) -> PH2-4,PI5-6
+   *   Bits 11-13: Control (OE,CLK,LAT) -> PI11,PH6-7
+   *
+   * Physical pin mapping (40-pin header):
+   *   R1=pin29(PI0), G1=pin12(PI1), B1=pin35(PI2), R2=pin40(PI3), G2=pin38(PI4), B2=pin31(PI15)
+   *   A=pin11(PH2), B=pin13(PH3), C=pin18(PH4), D=pin15(PI5), E=pin22(PI6)
+   *   CLK=pin23(PH6), LAT=pin19(PH7), OE=pin32(PI11)
+   */
+  {
+    .name          = "orangepi-zero2w",
+
+    /* Control signals - virtual bits 11-13 */
+    .output_enable = GPIO_BIT(11),   /* Virtual bit -> PI11, Physical pin 32 */
+    .clock         = GPIO_BIT(12),   /* Virtual bit -> PH6,  Physical pin 23 */
+    .strobe        = GPIO_BIT(13),   /* Virtual bit -> PH7,  Physical pin 19 */
+
+    /* Address lines - virtual bits 6-10 */
+    .a             = GPIO_BIT(6),    /* Virtual bit -> PH2,  Physical pin 11 */
+    .b             = GPIO_BIT(7),    /* Virtual bit -> PH3,  Physical pin 13 */
+    .c             = GPIO_BIT(8),    /* Virtual bit -> PH4,  Physical pin 18 */
+    .d             = GPIO_BIT(9),    /* Virtual bit -> PI5,  Physical pin 15 */
+    .e             = GPIO_BIT(10),   /* Virtual bit -> PI6,  Physical pin 22 */
+
+    /* Parallel chain 0 - virtual bits 0-5 */
+    .p0_r1         = GPIO_BIT(0),    /* Virtual bit -> PI0,  Physical pin 29 */
+    .p0_g1         = GPIO_BIT(1),    /* Virtual bit -> PI1,  Physical pin 12 */
+    .p0_b1         = GPIO_BIT(2),    /* Virtual bit -> PI2,  Physical pin 35 */
+    .p0_r2         = GPIO_BIT(3),    /* Virtual bit -> PI3,  Physical pin 40 */
+    .p0_g2         = GPIO_BIT(4),    /* Virtual bit -> PI4,  Physical pin 38 */
+    .p0_b2         = GPIO_BIT(5),    /* Virtual bit -> PI15, Physical pin 31 */
+
+    /* No additional parallel chains on Orange Pi Zero 2W - insufficient GPIO */
+  },
+
   {0}
 };

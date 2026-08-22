@@ -85,7 +85,36 @@ public:
   // Return if this appears to be a Pi 5-family board with RP1 I/O.
   static bool IsPi5Family();
 
+  // ORANGE_PI_ZERO2W: Check if running in H618 mode
+  static bool IsOrangePi();
+
 private:
+  // ORANGE_PI_ZERO2W: Forward declarations for H618 GPIO functions
+  // These are implemented in gpio.cc and handle the virtual-to-physical translation
+  static void H618SetBits(gpio_bits_t value);
+  static void H618ClrBits(gpio_bits_t value);
+
+  // Member variables - declared BEFORE inline methods that use them
+  gpio_bits_t output_bits_;
+  gpio_bits_t input_bits_;
+  gpio_bits_t reserved_bits_;
+  int slowdown_;
+
+  // ORANGE_PI_ZERO2W: Flag for H618 mode
+  bool is_h618_mode_;
+
+  volatile uint32_t *gpio_set_bits_low_;
+  volatile uint32_t *gpio_clr_bits_low_;
+  volatile uint32_t *gpio_read_bits_low_;
+
+#ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
+  bool uses_64_bit_;
+  volatile uint32_t *gpio_set_bits_high_;
+  volatile uint32_t *gpio_clr_bits_high_;
+  volatile uint32_t *gpio_read_bits_high_;
+#endif
+
+  // Inline methods that use member variables
   inline void delay() const {
 #if LED_MATRIX_ALLOW_BARRIER_DELAY
     if (slowdown_ == -1) {
@@ -107,6 +136,11 @@ private:
   }
 
   inline void WriteSetBits(gpio_bits_t value) {
+    // ORANGE_PI_ZERO2W: Use H618 GPIO functions if in Orange Pi mode
+    if (is_h618_mode_) {
+      H618SetBits(value);
+      return;
+    }
     *gpio_set_bits_low_ = static_cast<uint32_t>(value & 0xFFFFFFFF);
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
     if (uses_64_bit_)
@@ -115,29 +149,17 @@ private:
   }
 
   inline void WriteClrBits(gpio_bits_t value) {
+    // ORANGE_PI_ZERO2W: Use H618 GPIO functions if in Orange Pi mode
+    if (is_h618_mode_) {
+      H618ClrBits(value);
+      return;
+    }
     *gpio_clr_bits_low_ = static_cast<uint32_t>(value & 0xFFFFFFFF);
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
     if (uses_64_bit_)
       *gpio_clr_bits_high_ = static_cast<uint32_t>(value >> 32);
 #endif
   }
-
-private:
-  gpio_bits_t output_bits_;
-  gpio_bits_t input_bits_;
-  gpio_bits_t reserved_bits_;
-  int slowdown_;
-
-  volatile uint32_t *gpio_set_bits_low_;
-  volatile uint32_t *gpio_clr_bits_low_;
-  volatile uint32_t *gpio_read_bits_low_;
-
-#ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
-  bool uses_64_bit_;
-  volatile uint32_t *gpio_set_bits_high_;
-  volatile uint32_t *gpio_clr_bits_high_;
-  volatile uint32_t *gpio_read_bits_high_;
-#endif
 };
 
 // A PinPulser is a utility class that pulses a GPIO pin. There can be various

@@ -66,6 +66,9 @@
 #define BCM2709_PERI_BASE        0x3F000000
 #define BCM2711_PERI_BASE        0xFE000000
 
+// ORANGE_PI_ZERO2W: Allwinner H618 GPIO base address
+#define H618_PIO_BASE            0x0300B000
+
 #define GPIO_REGISTER_OFFSET         0x200000
 #define COUNTER_1Mhz_REGISTER_OFFSET   0x3000
 
@@ -125,6 +128,13 @@ static volatile uint32_t *s_PWM_registers = NULL;
 static volatile uint32_t *s_CLK_registers = NULL;
 
 namespace rgb_matrix {
+
+// ORANGE_PI_ZERO2W: Forward declarations for H618 GPIO functions
+// (Definitions are later in this file)
+struct H618VirtualGpioMapping { int port; int pin; };
+extern const H618VirtualGpioMapping h618_virtual_to_gpio[14];
+static void h618_configure_gpio_output(int port, int pin);
+
 static bool LinuxHasModuleLoaded(const char *name) {
   FILE *f = fopen("/proc/modules", "r");
   if (f == NULL) return false; // don't care.
@@ -144,7 +154,8 @@ static bool LinuxHasModuleLoaded(const char *name) {
 #define GPIO_BIT(x) (1ull << x)
 
 GPIO::GPIO() : output_bits_(0), input_bits_(0), reserved_bits_(0),
-               slowdown_(1)
+               slowdown_(1),
+               is_h618_mode_(false)  // ORANGE_PI_ZERO2W: Initialize H618 mode flag
 #ifdef ENABLE_WIDE_GPIO_COMPUTE_MODULE
              , uses_64_bit_(false)
 #endif
@@ -156,6 +167,25 @@ gpio_bits_t GPIO::InitOutputs(gpio_bits_t outputs,
   if (s_GPIO_registers == NULL) {
     fprintf(stderr, "Attempt to init outputs but not yet Init()-ialized.\n");
     return 0;
+  }
+
+  // ORANGE_PI_ZERO2W: Handle H618 GPIO output configuration
+  if (is_h618_mode_) {
+    outputs &= ~(output_bits_ | input_bits_ | reserved_bits_);
+
+    // Configure H618 GPIO pins as outputs using virtual bit mapping
+    // Only process bits 0-13 which are mapped to H618 GPIO
+    const int kMaxVirtualBit = 13;
+    for (int v = 0; v <= kMaxVirtualBit; ++v) {
+      if (outputs & GPIO_BIT(v)) {
+        int port = h618_virtual_to_gpio[v].port;
+        int pin = h618_virtual_to_gpio[v].pin;
+        h618_configure_gpio_output(port, pin);
+      }
+    }
+
+    output_bits_ |= outputs;
+    return outputs;
   }
 
   // Hack: for the PWM mod, the user soldered together GPIO 18 (new OE)
@@ -242,7 +272,8 @@ enum RaspberryPiModel {
   PI_MODEL_3,
   PI_MODEL_4,
   PI_MODEL_5
-};
+  // ORANGE_PI_ZERO2W: Add Orange Pi model for H618-based boards
+  ORANGEPI_ZERO2W};
 
 static int ReadBinaryFileToBuffer(uint8_t *buffer, size_t size,
                                   const char *filename) {
@@ -259,6 +290,30 @@ static int ReadTextFileToBuffer(char *buffer, size_t size,
   int r = ReadBinaryFileToBuffer((uint8_t *)buffer, size - 1, filename);
   buffer[r >= 0 ? r : 0] = '\0';
   return r;
+}
+
+// ORANGE_PI_ZERO2W: Check if running on Orange Pi Zero 2W (Allwinner H618)
+static bool IsOrangePiZero2W() {
+  char buffer[256];
+  if (ReadTextFileToBuffer(buffer, sizeof(buffer),
+                           "/proc/device-tree/compatible") < 0) {
+    return false;
+  }
+  // Check for H618 or Orange Pi Zero 2W compatible strings
+  // The compatible file contains null-separated strings
+  const char *p = buffer;
+  const char *end = buffer + sizeof(buffer);
+  while (p < end && *p) {
+    if (strstr(p, "sun50i-h618") != NULL ||
+        strstr(p, "orangepi-zero2w") != NULL ||
+        strstr(p, "orangepi,zero2w") != NULL) {
+      return true;
+    }
+    // Move to next null-terminated string
+    while (p < end && *p) p++;
+    p++;  // Skip the null terminator
+  }
+  return false;
 }
 
 /*
@@ -302,6 +357,11 @@ static uint32_t ReadRevisionFromDeviceTree() {
 }
 
 static RaspberryPiModel DetermineRaspberryModel() {
+  // ORANGE_PI_ZERO2W: Check for Orange Pi first, before Raspberry Pi detection
+  if (IsOrangePiZero2W()) {
+    return ORANGEPI_ZERO2W;
+  }
+
   uint32_t pi_revision = ReadRevisionFromProcCpuinfo();
   if (pi_revision == 0) {
     pi_revision = ReadRevisionFromDeviceTree();
@@ -366,7 +426,8 @@ static uint32_t *mmap_bcm_register(off_t register_offset) {
             "Pi 5-family boards use the RP1 backends instead of the legacy "
             "BCM GPIO mapping.\n");
     return NULL;
-  }
+  // ORANGE_PI_ZERO2W: Should not reach here - Orange Pi uses separate mmap function
+  case ORANGEPI_ZERO2W: return NULL;  }
 
   int mem_fd;
   if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC) ) < 0) {
@@ -425,8 +486,222 @@ static bool mmap_all_bcm_registers_once() {
   return true;
 }
 
+// ORANGE_PI_ZERO2W: Map H618 PIO (GPIO) registers
+// The H618 uses port-based GPIO organization (PA-PI), all within one memory block
+static uint32_t *mmap_h618_pio_registers() {
+  int mem_fd;
+  if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC)) < 0) {
+    perror("ORANGE_PI_ZERO2W: Cannot open /dev/mem");
+    fprintf(stderr, "ORANGE_PI_ZERO2W: GPIO access requires root privileges\n");
+    return NULL;
+  }
+
+  // Map the entire PIO register block (covers all ports PA-PI)
+  // Each port uses 0x24 bytes, 9 ports = 0x144 bytes, but map 4KB for safety
+  uint32_t *result = (uint32_t*) mmap(
+    NULL,
+    REGISTER_BLOCK_SIZE,
+    PROT_READ | PROT_WRITE,
+    MAP_SHARED,
+    mem_fd,
+    H618_PIO_BASE
+  );
+  close(mem_fd);
+
+  if (result == MAP_FAILED) {
+    perror("ORANGE_PI_ZERO2W: mmap error");
+    fprintf(stderr, "ORANGE_PI_ZERO2W: Failed to map H618 PIO at 0x%X\n",
+            H618_PIO_BASE);
+    return NULL;
+  }
+
+  return result;
+}
+
+// ORANGE_PI_ZERO2W: Global pointer to H618 PIO registers
+static volatile uint32_t *s_H618_PIO_registers = NULL;
+
+// ORANGE_PI_ZERO2W: Virtual bit to H618 GPIO translation table
+// Format: { port_index, pin_number } for each virtual bit (0-13)
+// Port H = 7, Port I = 8
+const H618VirtualGpioMapping h618_virtual_to_gpio[14] = {
+  {8,  0},   // Virtual 0  -> PI0  (R1)
+  {8,  1},   // Virtual 1  -> PI1  (G1)
+  {8,  2},   // Virtual 2  -> PI2  (B1)
+  {8,  3},   // Virtual 3  -> PI3  (R2)
+  {8,  4},   // Virtual 4  -> PI4  (G2)
+  {8, 15},   // Virtual 5  -> PI15 (B2)
+  {7,  2},   // Virtual 6  -> PH2  (A)
+  {7,  3},   // Virtual 7  -> PH3  (B)
+  {7,  4},   // Virtual 8  -> PH4  (C)
+  {8,  5},   // Virtual 9  -> PI5  (D)
+  {8,  6},   // Virtual 10 -> PI6  (E)
+  {8, 11},   // Virtual 11 -> PI11 (OE)
+  {7,  6},   // Virtual 12 -> PH6  (CLK)
+  {7,  7},   // Virtual 13 -> PH7  (LAT)
+};
+
+// ORANGE_PI_ZERO2W: H618 port register offsets
+#define H618_PORT_H_OFFSET (7 * 0x24)   // Port H base offset
+#define H618_PORT_I_OFFSET (8 * 0x24)   // Port I base offset
+#define H618_Pn_CFG0_OFF   0x00         // Config register 0
+#define H618_Pn_CFG1_OFF   0x04         // Config register 1 (pins 8-15)
+#define H618_Pn_DAT_OFF    0x10         // Data register
+
+// ORANGE_PI_ZERO2W: Pre-computed masks for Port H and Port I
+// Updated during InitOutputs based on which virtual bits are used
+static uint32_t s_h618_port_h_mask = 0;
+static uint32_t s_h618_port_i_mask = 0;
+
+// ORANGE_PI_ZERO2W: Translate virtual gpio_bits_t to H618 port data values
+// Returns the bit pattern for a specific port
+static uint32_t h618_virtual_to_port_bits(gpio_bits_t value, int port) {
+  uint32_t result = 0;
+  for (int v = 0; v < 14; v++) {
+    if ((value & (1ull << v)) && h618_virtual_to_gpio[v].port == port) {
+      result |= (1u << h618_virtual_to_gpio[v].pin);
+    }
+  }
+  return result;
+}
+
+// ORANGE_PI_ZERO2W: Configure H618 GPIO pin as output
+static void h618_configure_gpio_output(int port, int pin) {
+  if (s_H618_PIO_registers == NULL) return;
+
+  // Calculate register offset: each port is 0x24 bytes, CFGx at offset 0/4/8/C
+  uint32_t port_offset = port * 0x24;
+  int cfg_reg = pin / 8;          // Which CFG register (0-3)
+  int cfg_offset = (pin % 8) * 4; // Bit offset within register (4 bits per pin)
+
+  volatile uint32_t *cfg = s_H618_PIO_registers + (port_offset + cfg_reg * 4) / 4;
+
+  // Clear the 4 config bits and set to 0x1 (output mode)
+  uint32_t val = *cfg;
+  val &= ~(0xFu << cfg_offset);  // Clear 4 bits
+  val |= (0x1u << cfg_offset);   // Set to output (0x1)
+  *cfg = val;
+}
+
+// ORANGE_PI_ZERO2W: Set bits in H618 GPIO ports
+static void h618_set_bits(gpio_bits_t value) {
+  if (s_H618_PIO_registers == NULL || !value) return;
+
+  // Get bits for each port
+  uint32_t port_h_bits = h618_virtual_to_port_bits(value, 7);
+  uint32_t port_i_bits = h618_virtual_to_port_bits(value, 8);
+
+  // Set bits in Port H data register
+  if (port_h_bits) {
+    volatile uint32_t *dat_h = s_H618_PIO_registers + (H618_PORT_H_OFFSET + H618_Pn_DAT_OFF) / 4;
+    *dat_h = (*dat_h) | port_h_bits;
+  }
+
+  // Set bits in Port I data register
+  if (port_i_bits) {
+    volatile uint32_t *dat_i = s_H618_PIO_registers + (H618_PORT_I_OFFSET + H618_Pn_DAT_OFF) / 4;
+    *dat_i = (*dat_i) | port_i_bits;
+  }
+}
+
+// ORANGE_PI_ZERO2W: Clear bits in H618 GPIO ports
+static void h618_clear_bits(gpio_bits_t value) {
+  if (s_H618_PIO_registers == NULL || !value) return;
+
+  // Get bits for each port
+  uint32_t port_h_bits = h618_virtual_to_port_bits(value, 7);
+  uint32_t port_i_bits = h618_virtual_to_port_bits(value, 8);
+
+  // Clear bits in Port H data register
+  if (port_h_bits) {
+    volatile uint32_t *dat_h = s_H618_PIO_registers + (H618_PORT_H_OFFSET + H618_Pn_DAT_OFF) / 4;
+    *dat_h = (*dat_h) & ~port_h_bits;
+  }
+
+  // Clear bits in Port I data register
+  if (port_i_bits) {
+    volatile uint32_t *dat_i = s_H618_PIO_registers + (H618_PORT_I_OFFSET + H618_Pn_DAT_OFF) / 4;
+    *dat_i = (*dat_i) & ~port_i_bits;
+  }
+}
+
+// ORANGE_PI_ZERO2W: Write masked bits to H618 GPIO ports
+static void h618_write_masked_bits(gpio_bits_t value, gpio_bits_t mask) {
+  if (s_H618_PIO_registers == NULL || !mask) return;
+
+  // Get set and clear masks for each port
+  uint32_t port_h_set = h618_virtual_to_port_bits(value & mask, 7);
+  uint32_t port_h_clr = h618_virtual_to_port_bits(~value & mask, 7);
+  uint32_t port_i_set = h618_virtual_to_port_bits(value & mask, 8);
+  uint32_t port_i_clr = h618_virtual_to_port_bits(~value & mask, 8);
+
+  // Update Port H
+  if (port_h_set || port_h_clr) {
+    volatile uint32_t *dat_h = s_H618_PIO_registers + (H618_PORT_H_OFFSET + H618_Pn_DAT_OFF) / 4;
+    uint32_t val = *dat_h;
+    val &= ~port_h_clr;
+    val |= port_h_set;
+    *dat_h = val;
+  }
+
+  // Update Port I
+  if (port_i_set || port_i_clr) {
+    volatile uint32_t *dat_i = s_H618_PIO_registers + (H618_PORT_I_OFFSET + H618_Pn_DAT_OFF) / 4;
+    uint32_t val = *dat_i;
+    val &= ~port_i_clr;
+    val |= port_i_set;
+    *dat_i = val;
+  }
+}
+
+// ORANGE_PI_ZERO2W: Flag to indicate if H618 GPIO mode is active
+static bool s_h618_mode = false;
+
+static bool mmap_h618_registers_once() {
+  if (s_H618_PIO_registers != NULL) return true;  // already done.
+
+  s_H618_PIO_registers = mmap_h618_pio_registers();
+  if (s_H618_PIO_registers == NULL) {
+    return false;
+  }
+
+  s_h618_mode = true;
+
+  // ORANGE_PI_ZERO2W: H618 doesn't have the same 1MHz timer as BCM
+  // We'll rely on gettimeofday/clock_gettime for timing
+  s_Timer1Mhz = NULL;
+
+  // ORANGE_PI_ZERO2W: No BCM-style hardware PWM - will use timer-based pulses
+  s_PWM_registers = NULL;
+  s_CLK_registers = NULL;
+
+  return true;
+}
+
 bool GPIO::Init(int slowdown) {
   slowdown_ = slowdown;
+
+  // ORANGE_PI_ZERO2W: Use H618-specific initialization
+  if (GetPiModel() == ORANGEPI_ZERO2W) {
+    if (!mmap_h618_registers_once())
+      return false;
+
+    // ORANGE_PI_ZERO2W: Enable H618 mode for GPIO operations
+    is_h618_mode_ = true;
+
+    // ORANGE_PI_ZERO2W: H618 doesn't have separate set/clear registers like BCM
+    // We use the PIO registers directly. Set pointers to the base for compatibility,
+    // but actual GPIO operations will use H618-specific port addressing.
+    // The gpio_clr_bits_low_ is used for delay timing - point to a readable register
+    gpio_set_bits_low_ = const_cast<uint32_t*>(s_H618_PIO_registers);
+    gpio_clr_bits_low_ = const_cast<uint32_t*>(s_H618_PIO_registers);
+    gpio_read_bits_low_ = const_cast<uint32_t*>(s_H618_PIO_registers);
+
+    // ORANGE_PI_ZERO2W: Set s_GPIO_registers for compatibility with timer code
+    s_GPIO_registers = const_cast<uint32_t*>(s_H618_PIO_registers);
+
+    return true;
+  }
 
   // Pre-mmap all bcm registers we need now and possibly in the future, as to
   // allow  dropping privileges after GPIO::Init() even as some of these
@@ -541,7 +816,8 @@ bool Timers::Init() {
   case PI_MODEL_3: busy_wait_impl = busy_wait_nanos_rpi_3; break;
   case PI_MODEL_4: busy_wait_impl = busy_wait_nanos_rpi_4; break;
   case PI_MODEL_5: busy_wait_impl = busy_wait_nanos_rpi_4; break;
-  }
+  // ORANGE_PI_ZERO2W: H618 runs at 1.5GHz like Pi4, use similar timing
+  case ORANGEPI_ZERO2W: busy_wait_impl = busy_wait_nanos_rpi_4; break;  }
 
   DisableRealtimeThrottling();
   // If we have it, we run the update thread on core3. No perf-compromises:
@@ -568,6 +844,9 @@ static uint32_t JitterAllowanceMicroseconds() {
   case PI_MODEL_4:
   case PI_MODEL_5:
     return EMPIRICAL_NANOSLEEP_OVERHEAD_US + 10;  // this one is fast.
+  // ORANGE_PI_ZERO2W: H618 at 1.5GHz, similar to Pi4 - use same jitter allowance
+  case ORANGEPI_ZERO2W:
+    return EMPIRICAL_NANOSLEEP_OVERHEAD_US + 10;
   }
   return EMPIRICAL_NANOSLEEP_OVERHEAD_US;
 }
@@ -884,6 +1163,21 @@ uint32_t GetMicrosecondCounter() {
 // For external use, e.g. to lessen busy waiting.
 void SleepMicroseconds(long t) {
   Timers::sleep_nanos(t * 1000);
+}
+
+// ORANGE_PI_ZERO2W: Static wrapper for H618 GPIO set bits (called from gpio.h inline)
+void GPIO::H618SetBits(gpio_bits_t value) {
+  h618_set_bits(value);
+}
+
+// ORANGE_PI_ZERO2W: Static wrapper for H618 GPIO clear bits (called from gpio.h inline)
+void GPIO::H618ClrBits(gpio_bits_t value) {
+  h618_clear_bits(value);
+}
+
+// ORANGE_PI_ZERO2W: Check if running on Orange Pi (H618-based)
+bool GPIO::IsOrangePi() {
+  return GetPiModel() == ORANGEPI_ZERO2W;
 }
 
 } // namespace rgb_matrix
